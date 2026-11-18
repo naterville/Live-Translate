@@ -163,12 +163,13 @@
     </section>
 
     <!-- Live Interim Caption Banner -->
-    <section id="interimBox" class="hidden bg-indigo-950 text-white rounded-2xl p-4 sm:p-5 shadow-sm">
-      <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-indigo-300 mb-1">
+    <section id="interimBox" class="hidden bg-indigo-950 text-white rounded-2xl p-4 sm:p-5 shadow-sm space-y-1.5">
+      <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-indigo-300">
         <span class="w-2 h-2 rounded-full bg-rose-400 animate-pulse"></span>
-        <span>Hearing Now...</span>
+        <span>Live Real-Time Translation</span>
       </div>
-      <p id="interimText" class="text-base sm:text-lg text-indigo-50 leading-relaxed"></p>
+      <p id="interimText" class="text-sm text-indigo-200 leading-relaxed"></p>
+      <p id="interimTranslated" class="text-base sm:text-lg font-semibold text-white leading-snug"></p>
     </section>
 
     <!-- Main Transcript & Translation Feed -->
@@ -351,6 +352,14 @@
       <p id="listenerStatus" class="text-xs text-slate-500">Waiting for live service lines from the speaker...</p>
     </div>
 
+    <div id="listenerInterimBox" class="hidden bg-indigo-950 text-white rounded-2xl p-4 shadow-sm space-y-1">
+      <div class="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-indigo-300">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        <span>Speaking Now...</span>
+      </div>
+      <p id="listenerInterimText" class="text-base sm:text-lg font-semibold text-white leading-snug"></p>
+    </div>
+
     <div class="flex-1 bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-5 flex flex-col gap-3 min-h-[260px]">
       <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400">Live Captions</h3>
       <div id="listenerFeed" class="space-y-3 overflow-y-auto max-h-[420px]">
@@ -405,7 +414,20 @@
         <div>
           <label for="qrBaseUrlInput" class="block text-xs font-semibold text-slate-700 mb-1">Hosted Page URL (for phones to open)</label>
           <input id="qrBaseUrlInput" type="url" placeholder="https://your-church-site.com/sunday_translator.html" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs text-slate-800" />
-          <p class="text-[11px] text-slate-500 mt-1">Host this HTML file on an HTTPS link (e.g., GitHub Pages or Netlify) and paste its URL here. Multi-phone sanctuary sync also requires a real-time relay (e.g., Supabase or WebSockets); same-browser tabs sync automatically.</p>
+          <p class="text-[11px] text-slate-500 mt-1">Paste your GitHub Pages link here (e.g. <code>https://username.github.io/sunday-translator/</code>). Live cross-device sync is built in so phones scanning this QR code hear lines from the main audio source automatically.</p>
+        </div>
+
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1.5">Languages to Broadcast to Phones</label>
+          <div id="broadcastLangChecks" class="flex flex-wrap gap-2 text-xs">
+            <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 cursor-pointer"><input type="checkbox" value="es" checked class="accent-indigo-600" /> Spanish</label>
+            <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 cursor-pointer"><input type="checkbox" value="fr" class="accent-indigo-600" /> French</label>
+            <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 cursor-pointer"><input type="checkbox" value="pt" class="accent-indigo-600" /> Portuguese</label>
+            <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 cursor-pointer"><input type="checkbox" value="ko" class="accent-indigo-600" /> Korean</label>
+            <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 cursor-pointer"><input type="checkbox" value="zh" class="accent-indigo-600" /> Mandarin</label>
+            <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 cursor-pointer"><input type="checkbox" value="vi" class="accent-indigo-600" /> Vietnamese</label>
+          </div>
+          <p class="text-[11px] text-slate-500 mt-1">Attendees can pick any checked language on their phone without needing an API key.</p>
         </div>
 
         <div class="flex flex-wrap gap-2 pt-1">
@@ -501,7 +523,13 @@
         roomCode: 'SUNDAY-101',
         listenerMode: false,
         listenerAudioEnabled: false,
-        bc: null
+        bc: null,
+        interimTimer: null,
+        interimSeq: 0,
+        lastInterimText: '',
+        pollTimer: null,
+        lastPollSince: 'all',
+        seenLineIds: new Set()
       };
 
       // DOM Elements
@@ -522,6 +550,9 @@
         btnFocusMode: document.getElementById('btnFocusMode'),
         interimBox: document.getElementById('interimBox'),
         interimText: document.getElementById('interimText'),
+        interimTranslated: document.getElementById('interimTranslated'),
+        listenerInterimBox: document.getElementById('listenerInterimBox'),
+        listenerInterimText: document.getElementById('listenerInterimText'),
         transcriptFeed: document.getElementById('transcriptFeed'),
         emptyState: document.getElementById('emptyState'),
         entryCountBadge: document.getElementById('entryCountBadge'),
@@ -557,6 +588,7 @@
         qrRoomInput: document.getElementById('qrRoomInput'),
         qrDefaultLang: document.getElementById('qrDefaultLang'),
         qrBaseUrlInput: document.getElementById('qrBaseUrlInput'),
+        broadcastLangChecks: document.getElementById('broadcastLangChecks'),
         btnCopyQrLink: document.getElementById('btnCopyQrLink'),
         btnPreviewListener: document.getElementById('btnPreviewListener'),
         listenerView: document.getElementById('listenerView'),
@@ -678,7 +710,7 @@
         const utter = new SpeechSynthesisUtterance(item.text);
         const meta = LANG_META[item.langKey] || { bcp47: 'en-US' };
         utter.lang = meta.bcp47;
-        utter.rate = state.rate;
+        utter.rate = state.speechQueue.length >= 2 ? Math.min(1.4, state.rate + 0.15) : state.rate;
 
         const voices = window.speechSynthesis.getVoices();
         if (state.voiceUri) {
@@ -810,8 +842,8 @@
       el.transcriptFeed.addEventListener('click', (e) => {
         const btn = e.target.closest('[data-speak-id]');
         if (!btn) return;
-        const id = Number(btn.getAttribute('data-speak-id'));
-        const item = state.entries.find(x => x.id === id);
+        const id = btn.getAttribute('data-speak-id');
+        const item = state.entries.find(x => String(x.id) === id);
         if (item) {
           stopAllSpeech();
           const prevChecked = el.toggleSpeak.checked;
@@ -821,18 +853,47 @@
         }
       });
 
+      function scheduleInterimTranslation(text) {
+        if (text === state.lastInterimText) return;
+        state.lastInterimText = text;
+        clearTimeout(state.interimTimer);
+        const seq = ++state.interimSeq;
+        state.interimTimer = setTimeout(async () => {
+          const targetKey = el.targetLang.value;
+          const translated = await translateText(text, targetKey, null);
+          if (seq !== state.interimSeq || !state.listening) return;
+          el.interimTranslated.textContent = translated;
+          broadcastLine({ type: 'interim', original: text, translated, targetKey });
+        }, 420);
+      }
+
+      function getBroadcastLangs(primaryKey) {
+        const set = new Set([primaryKey]);
+        if (el.broadcastLangChecks) {
+          el.broadcastLangChecks.querySelectorAll('input:checked').forEach(cb => set.add(cb.value));
+        }
+        return Array.from(set);
+      }
+
       async function processSpokenLine(text, demoRow) {
         const clean = text.trim();
         if (!clean) return;
         const targetKey = el.targetLang.value;
         const targetName = (LANG_META[targetKey] && LANG_META[targetKey].name) || targetKey;
-        const translated = await translateText(clean, targetKey, demoRow);
+
+        const langs = getBroadcastLangs(targetKey);
+        const translations = {};
+        await Promise.all(langs.map(async (lk) => {
+          translations[lk] = await translateText(clean, lk, demoRow);
+        }));
+        const translated = translations[targetKey];
 
         const now = new Date();
         const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const lineId = Date.now() + '-' + Math.floor(Math.random() * 10000);
 
         state.entries.push({
-          id: Date.now() + Math.floor(Math.random() * 1000),
+          id: lineId,
           time: timeStr,
           original: clean,
           translated,
@@ -842,7 +903,16 @@
 
         renderFeed();
         enqueueSpeech(translated, targetKey);
-        broadcastLine({ time: timeStr, original: clean, translated, targetKey, demoRow: demoRow || null });
+        broadcastLine({
+          type: 'final',
+          id: lineId,
+          time: timeStr,
+          original: clean,
+          translated,
+          targetKey,
+          translations,
+          demoRow: demoRow || null
+        });
       }
 
       // Audio Meter Animation
@@ -931,15 +1001,22 @@
           for (let i = event.resultIndex; i < event.results.length; i++) {
             const transcript = event.results[i][0].transcript;
             if (event.results[i].isFinal) {
+              clearTimeout(state.interimTimer);
+              state.interimSeq++;
+              state.lastInterimText = '';
               el.interimBox.classList.add('hidden');
+              el.interimTranslated.textContent = '';
+              broadcastLine({ type: 'interim_clear' });
               processSpokenLine(transcript);
             } else {
               interim += transcript;
             }
           }
-          if (interim.trim()) {
+          const cleanInterim = interim.trim();
+          if (cleanInterim) {
             el.interimBox.classList.remove('hidden');
-            el.interimText.textContent = interim;
+            el.interimText.textContent = cleanInterim;
+            scheduleInterimTranslation(cleanInterim);
           }
         };
 
@@ -1192,26 +1269,106 @@
         state.bc = new BroadcastChannel('sunday_translator_' + room);
         state.bc.onmessage = async (ev) => {
           if (!state.listenerMode || !ev.data) return;
+          if (ev.data.type === 'interim_clear') {
+            el.listenerInterimBox.classList.add('hidden');
+            el.listenerInterimText.textContent = '';
+            return;
+          }
+          if (ev.data.type === 'interim') {
+            el.listenerInterimBox.classList.remove('hidden');
+            const targetKey = el.listenerLang.value || 'es';
+            if (ev.data.targetKey === targetKey && ev.data.translated) {
+              el.listenerInterimText.textContent = ev.data.translated;
+            } else {
+              el.listenerInterimText.textContent = ev.data.original;
+            }
+            return;
+          }
+          el.listenerInterimBox.classList.add('hidden');
           await handleIncomingListenerLine(ev.data);
         };
       }
 
-      function broadcastLine(payload) {
+      function getRelayTopic() {
+        const safe = (state.roomCode || 'SUNDAY-101').replace(/[^a-zA-Z0-9_-]/g, '');
+        return 'sunday-live-' + safe;
+      }
+
+      async function broadcastLine(payload) {
         if (!state.bc) initBroadcastChannel();
         if (state.bc) {
           try { state.bc.postMessage(payload); } catch (e) {}
         }
+        if (payload.type === 'final') {
+          try {
+            await fetch('https://ntfy.sh/' + encodeURIComponent(getRelayTopic()), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                id: payload.id,
+                time: payload.time,
+                original: payload.original,
+                targetKey: payload.targetKey,
+                translated: payload.translated,
+                translations: payload.translations || {}
+              })
+            });
+          } catch (e) { /* relay optional */ }
+        }
+      }
+
+      function startListenerPolling() {
+        stopListenerPolling();
+        state.lastPollSince = '10m';
+        async function poll() {
+          if (!state.listenerMode) return;
+          try {
+            const url = `https://ntfy.sh/${encodeURIComponent(getRelayTopic())}/json?poll=1&since=${encodeURIComponent(state.lastPollSince)}`;
+            const res = await fetch(url);
+            if (!res.ok) return;
+            const text = await res.text();
+            const lines = text.trim().split('\n').filter(Boolean);
+            for (const raw of lines) {
+              try {
+                const evt = JSON.parse(raw);
+                if (evt.id) state.lastPollSince = evt.id;
+                if (evt.event === 'message' && evt.message) {
+                  const payload = JSON.parse(evt.message);
+                  if (payload && payload.original) {
+                    await handleIncomingListenerLine(payload);
+                  }
+                }
+              } catch (err) {}
+            }
+          } catch (e) {}
+        }
+        poll();
+        state.pollTimer = setInterval(poll, 1200);
+      }
+
+      function stopListenerPolling() {
+        if (state.pollTimer) {
+          clearInterval(state.pollTimer);
+          state.pollTimer = null;
+        }
       }
 
       async function handleIncomingListenerLine(payload) {
+        if (payload.id && state.seenLineIds.has(payload.id)) return;
+        if (payload.id) state.seenLineIds.add(payload.id);
+
         const langKey = el.listenerLang.value || 'es';
         let translated = '';
-        if (payload.demoRow && payload.demoRow[langKey]) {
+        if (payload.translations && payload.translations[langKey]) {
+          translated = payload.translations[langKey];
+        } else if (payload.demoRow && payload.demoRow[langKey]) {
           translated = payload.demoRow[langKey];
         } else if (payload.targetKey === langKey && payload.translated) {
           translated = payload.translated;
-        } else {
+        } else if (state.apiKey && state.provider !== 'demo') {
           translated = await translateText(payload.original, langKey, payload.demoRow);
+        } else {
+          translated = payload.translated || payload.original;
         }
 
         if (el.listenerEmpty) el.listenerEmpty.classList.add('hidden');
@@ -1244,11 +1401,24 @@
         el.listenerRoomBadge.textContent = 'Room: ' + state.roomCode;
         el.speakerMain.classList.add('hidden');
         el.listenerView.classList.remove('hidden');
-        initBroadcastChannel();
+        try {
+        let savedRoom = localStorage.getItem('sunday_room_code');
+        if (!savedRoom) {
+          savedRoom = 'SUNDAY-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+          localStorage.setItem('sunday_room_code', savedRoom);
+        }
+        if (!state.listenerMode) {
+          state.roomCode = savedRoom;
+          el.qrRoomInput.value = savedRoom;
+        }
+      } catch (e) {}
+      initBroadcastChannel();
+        startListenerPolling();
       }
 
       function exitListenerMode() {
         state.listenerMode = false;
+        stopListenerPolling();
         stopAllSpeech();
         el.listenerView.classList.add('hidden');
         el.speakerMain.classList.remove('hidden');
